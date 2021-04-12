@@ -18,3 +18,22 @@ plt.xticks(rotation=90)
 
 fig.colorbar(im)
 plt.show()
+
+
+
+
+#Anova 분석
+grouped_test2=df_gptest[['drive-wheels', 'price']].groupby(['drive-wheels'])
+grouped_test2.head(2)
+
+grouped_test2.get_group('4wd')['price']
+# ANOVA
+f_val, p_val = stats.f_oneway(grouped_test2.get_group('fwd')['price'], grouped_test2.get_group('rwd')['price'], grouped_test2.get_group('4wd')['price'])  
+ 
+print( "ANOVA results: F=", f_val, ", P =", p_val)   
+
+f_val, p_val = stats.f_oneway(grouped_test2.get_group('fwd')['price'], grouped_test2.get_group('rwd')['price'])  
+ 
+print( "ANOVA results: F=", f_val, ", P =", p_val )
+
+
