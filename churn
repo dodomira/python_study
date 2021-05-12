@@ -1,0 +1,233 @@
+# -*- coding: utf-8 -*-
+
+# Team: Pubg Analytics Planning
+# Author: Soonhoung So
+# Table: pubg_gi.all_traffic_churn_conversion
+# S3: 
+# Duration: 5 minutes
+
+import sys
+from pyspark.sql import SparkSession
+
+app_name = sys.argv[0]
+target_date = sys.argv[1]
+
+spark = SparkSession \
+    .builder \
+    .appName("{} on {}".format(app_name, target_date)) \
+    .getOrCreate()
+spark.sparkContext.setLogLevel('WARN')
+###################################################################################################
+
+import boto3
+from pubg_util import load_schema, mysql, notifier
+from pyspark.sql.functions import *
+from datetime import datetime, timedelta
+
+s3 = boto3.resource('s3')
+bucket = s3.Bucket('pubg-log-labs')
+
+slack = notifier.SlackNotifier()
+batchName = 'churn_conversion'
+
+def load_churn(startdate, enddate, churn_type):    
+    startdate = datetime.strptime(startdate, '%Y-%m-%d')
+    enddate = datetime.strptime(enddate, '%Y-%m-%d')
+    date_list = [(startdate + timedelta(d)).strftime("%Y-%m-%d") for d in range((enddate-startdate).days+1)]    
+    path_list = ["s3a://pubg-log-labs/data_mart/churn_user_master/{}/{}"\
+    .format(target_date, churn_type) for target_date in date_list]
+    df = spark.read.option('mergeSchema', True).parquet(*path_list)
+    return df
+
+
+try :
+
+    type_28_date = (datetime.strptime(target_date, '%Y-%m-%d') - timedelta(days = 27)).strftime('%Y-%m-%d')
+    type_84_date = (datetime.strptime(target_date, '%Y-%m-%d') - timedelta(days = 83)).strftime('%Y-%m-%d')
+    type_365_date = (datetime.strptime(target_date, '%Y-%m-%d') - timedelta(days = 364)).strftime('%Y-%m-%d')
+
+
+    df28 = None
+    df84 = None
+    df365 = None
+
+    try :
+        df28 = load_churn(type_28_date, type_28_date, '*').where("device <> 'LPC'")
+        df28.createOrReplaceTempView("df_28")
+    except :
+        pass
+
+    try :
+        df84 = load_churn(type_84_date, type_84_date, '*').where("device <> 'LPC'")
+        df84.createOrReplaceTempView("df_84")
+    except :
+        pass
+
+    try :
+        df365 = load_churn(type_365_date, type_365_date, '*').where("device <> 'LPC'")
+        df365.createOrReplaceTempView("df_365")
+    except :
+        pass
+
+    sql = "Delete FROM all_traffic_churn_conversion WHERE fixed_date = '{target_date}'".format(target_date = target_date)
+
+    with mysql.get_connector('pubg_gi') as connector:
+        mycursor = connector.cursor()
+        mycursor.execute(sql)
+        connector.commit()
+
+    if df28 != None :
+
+        df_14_28 = spark.sql("""
+        select T1.churn_date, cast('{}' as date) as fixed_date, T1.platform, T1.device, T1.country, '14 to 28' as type, count(distinct T1.accountid) as first_cnt, count(distinct T2.accountid) as second_cnt
+        from
+        (
+            select churn_date, platform, device, country, accountid
+            from df_28
+            where churn_type = 14
+        )T1
+        left join
+        (
+            select churn_date, accountid
+            from df_28
+            where churn_type = 28
+        )T2 on T1.churn_date = T2.churn_date and T1.accountid = T2.accountid
+        group by 1,2,3,4,5
+        """.format(target_date))
+
+        mysql.insert_table(df_14_28, "pubg_gi", "all_traffic_churn_conversion")
+
+    if df84 != None :    
+
+        df_14_84 = spark.sql("""
+        select T1.churn_date, cast('{}' as date) as fixed_date, T1.platform, T1.device, T1.country, '14 to 84' as type, count(distinct T1.accountid) as first_cnt, count(distinct T2.accountid) as second_cnt
+        from
+        (
+            select churn_date, platform, device, country, accountid
+            from df_84
+            where churn_type = 14
+        )T1
+        left join
+        (
+            select churn_date, accountid
+            from df_84
+            where churn_type = 84
+        )T2 on T1.churn_date = T2.churn_date and T1.accountid = T2.accountid
+        group by 1,2,3,4,5
+        """.format(target_date))
+
+        mysql.insert_table(df_14_84, "pubg_gi", "all_traffic_churn_conversion")
+
+        df_28_84 = spark.sql("""
+        select T1.churn_date, cast('{}' as date) as fixed_date, T1.platform, T1.device, T1.country, '28 to 84' as type, count(distinct T2.accountid) as first_cnt, count(distinct T3.accountid) as second_cnt
+        from
+        (
+            select churn_date, platform, device, country, accountid
+            from df_84
+            where churn_type = 14
+        )T1
+        left join
+        (
+            select churn_date, accountid
+            from df_84
+            where churn_type = 28
+        )T2 on T1.churn_date = T2.churn_date and T1.accountid = T2.accountid
+        left join
+        (
+            select churn_date, accountid
+            from df_84
+            where churn_type = 84
+        )T3 on T1.churn_date = T3.churn_date and T1.accountid = T3.accountid
+        group by 1,2,3,4,5
+        """.format(target_date))
+
+        mysql.insert_table(df_28_84, "pubg_gi", "all_traffic_churn_conversion")
+
+
+    if df365 != None :  
+
+        df_14_365 = spark.sql("""
+        select T1.churn_date, cast('{}' as date) as fixed_date, T1.platform, T1.device, T1.country, '14 to 365' as type, count(distinct T1.accountid) as first_cnt, count(distinct T2.accountid) as second_cnt
+        from
+        (
+            select churn_date, platform, device, country, accountid
+            from df_365
+            where churn_type = 14
+        )T1
+        left join
+        (
+            select churn_date, accountid
+            from df_365
+            where churn_type = 365
+        )T2 on T1.churn_date = T2.churn_date and T1.accountid = T2.accountid
+        group by 1,2,3,4,5
+        """.format(target_date))
+
+        mysql.insert_table(df_14_365, "pubg_gi", "all_traffic_churn_conversion")
+
+        df_28_365 = spark.sql("""
+        select T1.churn_date, cast('{}' as date) as fixed_date, T1.platform, T1.device, T1.country, '28 to 365' as type, count(distinct T2.accountid) as first_cnt, count(distinct T3.accountid) as second_cnt
+        from
+        (
+            select churn_date, platform, device, country, accountid
+            from df_365
+            where churn_type = 14
+        )T1
+        left join
+        (
+            select churn_date, accountid
+            from df_365
+            where churn_type = 28
+        )T2 on T1.churn_date = T2.churn_date and T1.accountid = T2.accountid
+        left join
+        (
+            select churn_date, accountid
+            from df_365
+            where churn_type = 365
+        )T3 on T1.churn_date = T3.churn_date and T1.accountid = T3.accountid
+        group by 1,2,3,4,5
+        """.format(target_date))
+
+        mysql.insert_table(df_28_365, "pubg_gi", "all_traffic_churn_conversion")
+
+        df_84_365 = spark.sql("""
+        select T1.churn_date, cast('{}' as date) as fixed_date, T1.platform, T1.device, T1.country, '84 to 365' as type, count(distinct T2.accountid) as first_cnt, count(distinct T3.accountid) as second_cnt
+        from
+        (
+            select churn_date, platform, device, country, accountid
+            from df_365
+            where churn_type = 14
+        )T1
+        left join
+        (
+            select churn_date, accountid
+            from df_365
+            where churn_type = 84
+        )T2 on T1.churn_date = T2.churn_date and T1.accountid = T2.accountid
+        left join
+        (
+            select churn_date, accountid
+            from df_365
+            where churn_type = 365
+        )T3 on T1.churn_date = T3.churn_date and T1.accountid = T3.accountid
+        group by 1,2,3,4,5
+        """.format(target_date))
+
+        mysql.insert_table(df_84_365, "pubg_gi", "all_traffic_churn_conversion")
+
+
+except Exception as exception :
+    body = "[Batch Error] {} batch process has failed for {}\n".format(batchName, target_date)
+    body += "[{}]_{}".format(str(type(exception)), str(exception))
+    state = "danger"
+
+else :
+    body = "[Batch Success] {} batch process has been successfully finished for {}".format(batchName, target_date)
+    state = "good"
+
+finally :       
+    try :
+        slack.send("#pca_batch_alarm", body, state)
+    except Exception as e :
+        print(e)
+
